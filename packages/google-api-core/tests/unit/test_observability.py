@@ -747,7 +747,7 @@ def test_trace_http_request_active(monkeypatch):
 
 
 def test_trace_context_record_response_success(monkeypatch):
-    """Proves that _TraceContext.record_response records status code and size attributes."""
+    """Proves that _TraceContext.record_response records status code and size attributes while leaving status UNSET."""
     mock_span = mock.Mock()
     response = mock.Mock(status_code=200, headers={"Content-Length": "42"})
 
@@ -759,21 +759,147 @@ def test_trace_context_record_response_success(monkeypatch):
     ctx.record_response(response)
     mock_span.set_attribute.assert_any_call("http.response.status_code", 200)
     mock_span.set_attribute.assert_any_call("http.response.body.size", 42)
+    mock_span.set_status.assert_not_called()
 
 
 def test_trace_context_record_response_error_status(monkeypatch):
-    """Proves that _TraceContext.record_response sets error status on 4xx/5xx responses."""
+    """Proves that _TraceContext.record_response sets error status, error.type, and status.message on 4xx/5xx responses."""
     mock_span = mock.Mock()
-    response = mock.Mock(status_code=503, headers={})
+    mock_parent_span = mock.Mock()
+    response = mock.Mock(
+        status_code=503,
+        headers={},
+        json=mock.Mock(return_value={"error": {"message": "Temporary glitch"}}),
+    )
 
     mock_status_mod = mock.Mock()
     monkeypatch.setitem(sys.modules, "opentelemetry.trace.status", mock_status_mod)
 
     ctx = _observability._TraceContext()
     ctx._span = mock_span
+    ctx._parent_span = mock_parent_span
     ctx.record_response(response)
     mock_span.set_attribute.assert_any_call("http.response.status_code", 503)
+    mock_span.set_attribute.assert_any_call("error.type", "503")
+    mock_span.set_attribute.assert_any_call("status.message", "Temporary glitch")
+    mock_parent_span.set_attribute.assert_called_once_with(
+        "http.response.status_code", 503
+    )
     mock_span.set_status.assert_called_once()
+
+    # Also test 503 response with no extractable message
+    mock_span.reset_mock()
+    ctx.record_response(mock.Mock(status_code=503, headers={}))
+    mock_span.set_attribute.assert_any_call("error.type", "503")
+
+
+def test_extract_http_error_message_variants():
+    """Proves that _extract_http_error_message handles JSON dicts, string errors, text fallbacks, and empty responses."""
+    extract = _observability._TraceContext._extract_http_error_message
+
+    # 1. Nested dict error message
+    resp_dict = mock.Mock(
+        json=mock.Mock(return_value={"error": {"message": "Invalid argument"}})
+    )
+    assert extract(resp_dict) == "Invalid argument"
+
+    # 2. String error field in JSON dict
+    resp_str_err = mock.Mock(json=mock.Mock(return_value={"error": "Simple error"}))
+    assert extract(resp_str_err) == "Simple error"
+
+    # 3. Empty message in JSON dict + fallback to text
+    resp_fallback_text = mock.Mock(
+        json=mock.Mock(return_value={"error": {"message": ""}}),
+        text="  Gateway timeout  ",
+        reason=None,
+    )
+    assert extract(resp_fallback_text) == "Gateway timeout"
+
+    # 4. Non-dict JSON payload + json() raising ValueError + fallback to reason
+    resp_json_exc = mock.Mock(
+        json=mock.Mock(side_effect=ValueError("No JSON")),
+        text="",
+        reason="Service Unavailable",
+    )
+    assert extract(resp_json_exc) == "Service Unavailable"
+
+    # 5. Non-callable json attribute and no text/reason
+    resp_empty = mock.Mock(json=None, text=None, reason=None)
+    assert extract(resp_empty) is None
+
+    # 6. JSON returns a list instead of a dict and error is neither dict nor non-empty str
+    resp_list = mock.Mock(
+        json=mock.Mock(return_value=["not-a-dict"]), text=None, reason=None
+    )
+    assert extract(resp_list) is None
+    resp_int_err = mock.Mock(
+        json=mock.Mock(return_value={"error": 123}), text=None, reason=None
+    )
+    assert extract(resp_int_err) is None
+
+
+def test_trace_http_request_propagates_to_parent_span(monkeypatch):
+    """Proves that trace_http_request propagates url.template (first attempt) and http.response.status_code to parent T3 span."""
+    monkeypatch.setenv("GOOGLE_SDK_EXPERIMENTAL_PYTHON_TRACING_ENABLED", "true")
+
+    mock_tracer = mock.MagicMock()
+    mock_span = mock.MagicMock()
+    mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
+
+    parent_attrs = {}
+    mock_parent_span = mock.MagicMock()
+    mock_parent_span.is_recording.return_value = True
+    mock_parent_span.attributes = parent_attrs
+
+    def _set_parent_attr(k, v):
+        parent_attrs[k] = v
+
+    mock_parent_span.set_attribute.side_effect = _set_parent_attr
+
+    mock_otel = mock.MagicMock()
+    mock_otel.trace.get_tracer.return_value = mock_tracer
+    mock_otel.trace.get_current_span.return_value = mock_parent_span
+    monkeypatch.setitem(sys.modules, "opentelemetry", mock_otel)
+    monkeypatch.setitem(sys.modules, "opentelemetry.trace", mock_otel.trace)
+    monkeypatch.setitem(
+        sys.modules,
+        "opentelemetry.trace.propagation.tracecontext",
+        mock_otel.trace.propagation.tracecontext,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "opentelemetry.instrumentation.grpc",
+        mock.Mock(),
+    )
+
+    # First attempt: sets url.template on parent_span
+    with _observability.trace_http_request(
+        method="POST",
+        url="https://example.com/v1/first",
+        url_template="/v1/first",
+        client_options=ClientOptions(),
+    ) as ctx:
+        assert ctx._parent_span is mock_parent_span
+    assert parent_attrs["url.template"] == "/v1/first"
+
+    # Second attempt with a different url_template: does NOT overwrite first attempt's url.template
+    with _observability.trace_http_request(
+        method="POST",
+        url="https://example.com/v1/second",
+        url_template="/v1/second",
+        client_options=ClientOptions(),
+    ):
+        pass
+    assert parent_attrs["url.template"] == "/v1/first"
+
+    # Third attempt with url_template=None
+    with _observability.trace_http_request(
+        method="POST",
+        url="https://example.com/v1/none",
+        url_template=None,
+        client_options=ClientOptions(),
+    ):
+        pass
 
 
 def test_trace_context_record_error(monkeypatch):
