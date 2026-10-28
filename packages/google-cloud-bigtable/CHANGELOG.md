@@ -4,6 +4,22 @@
 
 [1]: https://pypi.org/project/google-cloud-bigtable/#history
 
+## [2.50.3](https://github.com/googleapis/google-cloud-python/compare/google-cloud-bigtable-v2.50.2...google-cloud-bigtable-v2.50.3) (2026-10-28)
+
+
+### Bug Fixes
+
+* **bigtable:** Log warning on background task failure instead of exception ([#18193](https://github.com/googleapis/google-cloud-python/issues/18193)) ([92a8bf4](https://github.com/googleapis/google-cloud-python/commit/92a8bf4de41ee3e17c93514aad57b7047130c020))
+* **bigtable:** pack unpacked error details in _get_status and harden batcher error handling ([#18770](https://github.com/googleapis/google-cloud-python/issues/18770)) ([525e740](https://github.com/googleapis/google-cloud-python/commit/525e7403a59bd4ac20c049b0828d744a8f535b76))
+* **bigtable:** remove unneeded status field from throttling latencies metric ([#18858](https://github.com/googleapis/google-cloud-python/issues/18858)) ([dd48193](https://github.com/googleapis/google-cloud-python/commit/dd4819312e7fa21ab1147af6b15a43d82e7fee60))
+* **bigtable:** restore the mutation lifecycle in mutate_rows and DirectRow.commit ([#18856](https://github.com/googleapis/google-cloud-python/issues/18856)) ([d0ce8e3](https://github.com/googleapis/google-cloud-python/commit/d0ce8e312a06d8075505b500cb12ec8bec511b3d))
+* **bigtable:** synchronize MutationsBatcher staging and flush scheduling ([#18827](https://github.com/googleapis/google-cloud-python/issues/18827)) ([38afa8a](https://github.com/googleapis/google-cloud-python/commit/38afa8ad35ebcfa64462dc5a8238a23f63ead4c0))
+
+
+### Documentation
+
+* **bigtable:** clarify that MutationsBatcher.flush defers exceptions to close ([#18825](https://github.com/googleapis/google-cloud-python/issues/18825)) ([371218d](https://github.com/googleapis/google-cloud-python/commit/371218dcd26981159ae9df2962da812a3bf204f1))
+
 ## [2.50.2](https://github.com/googleapis/google-cloud-python/compare/google-cloud-bigtable-v2.50.1...google-cloud-bigtable-v2.50.2) (2026-10-22)
 
 
